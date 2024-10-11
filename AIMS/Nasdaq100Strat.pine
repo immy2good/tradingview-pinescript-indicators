@@ -318,3 +318,117 @@ plotshape(sellSignal, "Short Signal", color=color.rgb(255, 82, 82, 29), style=sh
 // ========== Plot Moving Averages ==========
 plot(fasterma, "Faster EMA", color=#db2f2f, linewidth=1, display=display.all)
 plot(slowerma, "Slower EMA", color=color.rgb(36, 73, 219), linewidth=2, display=display.all)
+
+// ========== Debugging Information ==========
+// plot(equity, "Equity", color=color.blue, linewidth=2, style=plot.style_stepline)
+// plot(risk, "Risk", color=color.red, linewidth=2, style=plot.style_stepline)
+// plot(qty, "Position Size", color=color.green, linewidth=2, style=plot.style_stepline)
+// plot(strategy.position_size, "Position Size", color=color.green, linewidth=2, style=plot.style_stepline)
+
+// q: //@version=5
+strategy("The Ultimate NAS100 Strategy by iTradeAIMS - User Input", overlay=true, 
+         calc_on_order_fills = false, 
+         calc_on_every_tick = true, 
+         default_qty_type = strategy.percent_of_equity, 
+         initial_capital = 1000000)
+
+// ========== Supertrend Indicator ==========
+// Supertrend Calculation
+supertrend_factor = input(3, "Supertrend Factor", group="Supertrend")
+supertrend_atrPeriod = input(10, "Supertrend ATR Period", group="Supertrend")
+
+[supertrend, supertrend_direction] = ta.supertrend(supertrend_factor, supertrend_atrPeriod)
+
+plot(supertrend, color=supertrend_direction == 1 ? color.green : color.red, linewidth=2)
+
+// ========== Risk Management ==========
+// (existing code)
+
+// ========== Signal & Trades Management ==========
+// (existing code)
+
+// ========== Buy Signal Logic ==========
+// Modify buy signal to use Supertrend
+buySignalSupertrend = bullPattern and takeBuySignals and barstate.isconfirmed and timeToTrade and longtradesToday < max_long_trades and crossoverUp and not crossoverDown and supertrend_direction == 1
+
+if buySignal
+    alert("Buy Signal Detected - NAS100")
+    longEntryPrice := high + (factor * syminfo.mintick)
+    long_SL := low - (factor * syminfo.mintick)
+    
+    // Calculate Take Profit based on user selection
+    Long_tp1 := tp_type == "Multiple of SL" ? longEntryPrice + ((longEntryPrice - long_SL) * tp_multiple) : 
+     longEntryPrice + tp_fixed
+    
+    longtradesToday += 1
+    strategy.order("BuyTrade", strategy.long, stop=longEntryPrice, qty=qty, comment="Buy")
+    strategy.exit("TP1", "BuyTrade", limit=Long_tp1, qty_percent=tp1_percent, stop=long_SL,
+     comment_loss="SL1", comment_profit="TP1")
+    
+    // Set buy signal management variables
+    buy_signal_bar_count := 0
+    buy_signal_low := low
+    buy_order_active := true
+    
+    // Reset trailing stop flags
+    long_trail_half_sl_set := false
+    long_trail_breakeven_set := false
+
+// ========== Sell Signal Logic ==========
+// Modify sell signal to use Supertrend
+sellSignalSupertrend = bearPattern and takeSellSignals and barstate.isconfirmed and timeToTrade and shorttradesToday < max_short_trades and crossoverDown and not crossoverUp and supertrend_direction == -1
+
+if sellSignal
+    alert("Sell Signal Detected - NAS100")
+    shortEntryPrice := low - (factor * syminfo.mintick)
+    short_SL := high + (factor * syminfo.mintick)
+    
+    // Calculate Take Profit based on user selection
+    short_tp1 := tp_type == "Multiple of SL" ? 
+     shortEntryPrice - ((short_SL - shortEntryPrice) * tp_multiple) : 
+     shortEntryPrice - tp_fixed
+    
+    shorttradesToday += 1
+    strategy.order("SellTrade", strategy.short, stop=shortEntryPrice, qty=qty, comment="Sell")
+    strategy.exit("TP1", "SellTrade", limit=short_tp1, qty_percent=tp1_percent, stop=short_SL, 
+     comment_loss="SL1", comment_profit="TP1")
+    
+    // Set sell signal management variables
+    sell_signal_bar_count := 0
+    sell_signal_high := high
+    sell_order_active := true
+    
+    // Reset trailing stop flags
+    short_trail_half_sl_set := false
+    short_trail_breakeven_set := false
+
+// ========== Trailing Stop Mechanism ==========
+// Modify trailing stop to use Supertrend
+if use_trailing_stop
+    // ==== Trailing Stop for Long Positions ====
+    if strategy.position_size > 0
+        // Move SL to Supertrend value
+        strategy.exit("Trail_SL_Long", "BuyTrade", stop=supertrend, comment="Trailing SL Long")
+    
+    // ==== Trailing Stop for Short Positions ====
+    if strategy.position_size < 0
+        // Move SL to Supertrend value
+        strategy.exit("Trail_SL_Short", "SellTrade", stop=supertrend, comment="Trailing SL Short")
+
+// ========== Close All Trades at Specific Time ==========
+// (existing code)
+
+// ========== Close All Trades at Session End ==========
+// (existing code)
+
+// ========== Reset Trade Counts at New Day ==========
+// (existing code)
+
+// ========== Plot Buy/Sell Signals ==========
+// (existing code)
+
+// ========== Plot Moving Averages ==========
+// (existing code)
+
+// ========== Debugging Information ==========
+// (existing code)

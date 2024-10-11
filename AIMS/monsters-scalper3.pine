@@ -1,0 +1,883 @@
+import TradingView/ta/8
+//@version=5
+strategy("The ScalpMonster 3 - V.250b2 - 2 Sessions", 
+     overlay=true,  
+     calc_on_order_fills=false, 
+     calc_on_every_tick=false, 
+     default_qty_type=strategy.percent_of_equity,
+     currency = currency.USD, 
+     initial_capital=10000)
+
+
+color1 = color.from_gradient(close, low, high, color.rgb(255, 59, 59, 50), color.rgb(0, 54, 230, 50))
+color3 = color.from_gradient(close, low, high, color.rgb(0, 54, 230, 50), color.rgb(255, 59, 59, 50))
+color2 = color.from_gradient(ta.rsi(close, 7), 0, 100, color.rgb(255, 0, 0, 50), color.rgb(25, 0, 255, 50))
+// --------------------
+// Risk Management Inputs
+// --------------------
+var group_risk = "Risk Management"
+riskPercentage = input.float(1.0, "Risk %", group=group_risk, tooltip="Adjust risk according to your broker's feed.", inline = "risk")
+
+maxDailyLossPercent = input.float(4.5, "Max Daily Loss %", minval=0, step=0.1, tooltip="Stop trading if today's loss 
+     exceeds this percentage of equity", group="Risk Management" , inline = "risk")
+
+useCompounding = input.bool(true, "Use Compounding", group=group_risk, tooltip="If enabled, risk is calculated based on 
+ starting equity plus accrued profits", inline = "comp")
+
+normalizeLotSize = input.bool(false, "Max Volume / Lot Size", group=group_risk, inline = "comp", tooltip="If enabled, the 
+ position size will be capped at the defined maximum lot size when compounding is enabled to prevent excessive growth in position size.")
+
+maxLotSize = input.float(100.0, "Max Lot Size", group=group_risk,  inline = "comp", tooltip=" Defines the maximum position size allowed to 
+ prevent excessive risk when compounding is enabled. Works only when Normalise Lot Size enabled." )
+
+
+SL_bar_offset = input.int(0, "SL Offset", minval=0,  step=1, tooltip="0 for signal bar, 1 for previous bar and so on", group="Risk Management" )
+// --------------------
+// Trade Management Inputs
+// --------------------
+enableMaxTrades = input.bool(true, "Max Trades Per Day", group="Trade Management", tooltip="Enable this to limit the maximum number of trades 
+     per day. Disable for unlimited trades. Resets every day")
+maxLongTrades = input.int(10, "Max Long Trades", group="Trade Management", inline="MaxTrades", tooltip="Max number of long trades per day")
+maxShortTrades = input.int(10, "Max Short Trades", group="Trade Management", inline="MaxTrades", tooltip="Max number of short trades per day")
+
+// --------------------
+// Scaling Options Inputs
+// --------------------
+var group_tm = "Trade Management"
+useScaling = input.bool(false, "Enable Position Scaling", group=group_tm, tooltip="Enable to use two take profit levels, disable for a 
+     single take profit level. When uncheck will only use TP1 and close position 100%")
+tp1Multiple = input.float(0.5, "TP 1", step=0.1, inline="TP1", group=group_tm)
+tp1Percent = input.float(70, "% to Close", inline="TP1", group=group_tm)
+tp2Multiple = input.float(0.7, "TP 2", inline="TP2", group=group_tm)
+tp2Percent = input.float(100, "% to Close", inline="TP2", group=group_tm)
+
+// --------------------
+// Order Management Inputs
+// --------------------
+// factor = input.float(10, title="Factor", group="Order Management", tooltip="Number of pips or points offset")
+factorBuy = input.float(1, title="Offset Buy PO", group="Order Management", tooltip="Offset in pips for Buy Signal Entry Price.", inline = "entryOffset")
+factorSell = input.float(0.1, title="Offset Sell PO", group="Order Management", tooltip="Offset in pips for Sell Signal Entry Price.", inline = "entryOffset")
+factorBuyStopLoss = input.float(0.1, title="Offset Buy SL", group="Order Management", tooltip="Offset in pips for Stop Loss.", inline = "stopOffset")
+factorSellStopLoss = input.float(1, title="Offset Sell SL", group="Order Management", tooltip="Offset in pips for Stop Loss.", inline = "stopOffset")
+// --------------------
+// Signal Inputs
+// --------------------
+takeBuySignals = input.bool(true, "Take Buy Signals", group="Signal Management", tooltip = "This option allows us to check both type of signals. e.g. if you want to 
+             find out overall performance for buy only signals then uncheck the sell signals and vice versa", inline="signalsOn")
+takeSellSignals = input.bool(true, "Take Sell Signals", group="Signal Management", inline="signalsOn")
+lookForBetter = input.bool(true, title = "Look for Better Price", tooltip =  "Tick this if you'd like to modify trade based on a 
+     better price  due to a further pullback" , group="Signal Management")
+
+
+
+
+
+var tradingWindow = "Trading Session Window"
+tradingWindowEnabled = input.bool(true, title="Enable Trading Window", group=tradingWindow)
+
+// First Trading Session (e.g., London Session)
+enableFirstSession = input.bool(true, title="Enable First Session", group=tradingWindow, inline="FirstSession")
+startTradeHour1 = input.int(8, title="Start Hour", inline="FirstSession", group=tradingWindow)
+startTradeMinute1 = input.int(30, title=":", inline="FirstSession", group=tradingWindow)
+endTradeHour1 = input.int(10, title="End Hour", inline="FirstSession", group=tradingWindow)
+endTradeMinute1 = input.int(0, title=":", inline="FirstSession", group=tradingWindow)
+
+// Second Trading Session (e.g., US Session)
+enableSecondSession = input.bool(true, title="Enable Second Session", group=tradingWindow, inline="SecondSession")
+startTradeHour2 = input.int(14, title="Start Hour", inline="SecondSession", group=tradingWindow)
+startTradeMinute2 = input.int(30, title=":", inline="SecondSession", group=tradingWindow)
+endTradeHour2 = input.int(15, title="End Hour", inline="SecondSession", group=tradingWindow)
+endTradeMinute2 = input.int(30, title=":", inline="SecondSession", group=tradingWindow)
+
+// Check if within the trading window
+isFirstSession = tradingWindowEnabled and enableFirstSession and (hour >= startTradeHour1 and minute >= startTradeMinute1) and (hour < endTradeHour1 or (hour == endTradeHour1 and minute < endTradeMinute1))
+isSecondSession = tradingWindowEnabled and enableSecondSession and (hour >= startTradeHour2 and minute >= startTradeMinute2) and (hour < endTradeHour2 or (hour == endTradeHour2 and minute < endTradeMinute2))
+
+// Combined trading window check
+isInTradingWindow = isFirstSession or isSecondSession
+
+
+// --------------------
+// Visual Enhancements Inputs
+// --------------------
+showTrendShading = input.bool(false, "Show Trend Shading", group="Trade Visualisation")
+showTrendFlags = input.bool(false, "Enable Trend Flags", group="Trade Visualisation")
+trans = input.int(75, "Trade Lines Transparency", minval=0, maxval=100, group="Trade Visualisation")
+// fillTransparencyTP1TP2 = input.int(75, "Transparency for TP1-TP2 Fill (0-100)", minval=0, maxval=100, group="Trade Visualisation")
+changeCandleColor = input.bool(false, "Change Candle Colors Based on Trend", group="Trade Visualisation")
+
+// --------------------
+// Session Line Toggle Inputs
+// --------------------
+showSessionLines = input.bool(false, "Show Start/End Session Lines", group="Visual Enhancements", tooltip="Enable or disable the display of vertical lines marking the start and end of the trading session.")
+
+// --------------------
+// Info Box Customization Inputs
+// --------------------
+infoBoxPosition = input.string("Top Right", "Info Box Position", options=["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group="Info Box", tooltip="Choose the position of the Info Box on the chart.")
+showInfoBox = input.bool(true, "Show Info Box", group="Info Box", tooltip="Toggle the visibility of the informational Info Box on the chart.")
+
+// **New Inputs for Info Box Items**
+showTradingSession = input.bool(true, "Show Trading Session Status", group="Info Box", tooltip="Display the current trading session status (On/Off).")
+showTradesTaken = input.bool(true, "Show Trades Taken", group="Info Box", tooltip="Display the total number of trades taken today.")
+showProfitLoss = input.bool(true, "Show Profit/Loss", group="Info Box", tooltip="Display the cumulative profit or loss.")
+showTotalWinners = input.bool(true, "Show Total Winners", group="Info Box", tooltip="Display the total number of winning trades.")
+showTotalLosers = input.bool(true, "Show Total Losers", group="Info Box", tooltip="Display the total number of losing trades.")
+showTodayWinners = input.bool(true, "Show Today's Winners", group="Info Box", tooltip="Display the number of winning trades today.")
+showTodayLosers = input.bool(true, "Show Today's Losers", group="Info Box", tooltip="Display the number of losing trades today.")
+showTodaysProfitLoss = input.bool(true, "Show Today's Profit/Loss", group="Info Box", tooltip="Display today's cumulative profit or loss.")
+showRiskPercentage = input.bool(true, "Show Risk % per Trade", group="Info Box", tooltip="Display the risk percentage per trade.")
+
+
+var infoBoxThemes = "Info Box Colour Theme"
+// **New Inputs for Info Box Background Color**
+infoBoxTheme = input.string("Dark", "Info Box Theme", options=["Light", "Dark"], group= infoBoxThemes, tooltip="Switch betwen Default Dark and Light Theme")
+infoBoxBgTransparency = input.int(85, "Background Transparency", minval=0, maxval=100, group= infoBoxThemes)
+
+darkLightTheme = input.bool(true, "Use Dark/Light Themes", group= infoBoxThemes, tooltip="Use Default Theme Colours? Select below. When unchecked custom colours are used")
+manualInfoBoxBg = input.color(color.rgb(255, 255, 255, 0), "Custom Background Colour", group= infoBoxThemes, tooltip="Select a custom background color for the Info Box.")
+
+// **New Inputs for Info Box Text Colors**
+textColorNeutralUser = input.color(color.gray, "Custom Text Color Neutral", group= infoBoxThemes, tooltip="Select the text color for neutral text.")
+textColorNegativeUser = input.color(color.red, "Custom Text Color Negative", group= infoBoxThemes, tooltip="Select the text color for negative values.")
+textColorPositiveUser = input.color(color.green, "Custom Text Color Positive", group= infoBoxThemes, tooltip="Select the text color for positive values.")
+
+// --------------------
+// Time Calculations
+// --------------------
+currentHour = hour(time, "Europe/London")
+currentMinute = minute(time, "Europe/London")
+
+// Check if within the first trading session
+isFirstSessionActive = tradingWindowEnabled and enableFirstSession and
+     (currentHour > startTradeHour1 or (currentHour == startTradeHour1 and currentMinute >= startTradeMinute1)) and
+     (currentHour < endTradeHour1 or (currentHour == endTradeHour1 and currentMinute <= endTradeMinute1))
+
+// Check if within the second trading session
+isSecondSessionActive = tradingWindowEnabled and enableSecondSession and
+     (currentHour > startTradeHour2 or (currentHour == startTradeHour2 and currentMinute >= startTradeMinute2)) and
+     (currentHour < endTradeHour2 or (currentHour == endTradeHour2 and currentMinute <= endTradeMinute2))
+
+// Combined time to trade condition
+timeToTrade = isFirstSessionActive or isSecondSessionActive
+
+
+
+// --------------------
+// Moving Averages for Trend Detection
+// --------------------
+fasterMA = ta.ema(close[1], 5)
+slowerMA = ta.ema(close[1], 10)
+slowestMA = ta.ema(close[1], 50)
+[Pine_Supertrend, pineDirection] = ta.supertrend(2, 14)
+plot(pineDirection < 0 ? Pine_Supertrend : na, "Up direction", color = color2, style=plot.style_linebr)
+plot(pineDirection > 0 ? Pine_Supertrend : na, "Down direction", color = color2, style=plot.style_linebr)
+
+// Create boolean variables for bullish and bearish conditions
+bool isBullish = pineDirection < 0  // True if the direction indicates an uptrend
+bool isBearish = pineDirection > 0  // True if the direction indicates a downtrend
+
+// --------------------
+// Buy and Sell Signals
+// --------------------
+bool useSuperTrend = true
+buySignal = (high <= high[1] and high[1] >= high[2] and low >= low[2]) and isBullish
+buySignal1 = (high <= high[1] and high[1] <= high[2] and high[2] >= high[3] and close >= low[3]) and (not useSuperTrend or isBullish)
+
+sellSignal = (low >= low[1] and low[1] <= low[2] and high <= high[2]) and isBearish
+sellSignal1 = (low >= low[1] and low[1] >= low[2] and low[2] <= low[3] and close <= high[3]) and (not useSuperTrend or isBearish)
+
+
+// buySignal = (high <= high[1] and high[1] >= high[2] and high[2] >= high[3] and 
+//              low[1] >= low[2] and low[2] >= low[3] and low >= low[2]) and close > fasterMA
+
+
+
+// buySignal1 = (high <= high[1] and high[1] <= high[2] and high[2] >= high[3] and high[3] >= high[4] 
+//      and (low[1] >= low[3] or low[2] >= low[3] ) and low[3] >= low[4] and low >= low[3]) and close > fasterMA
+
+        
+// sellSignal = (low >= low[1] and low[1] <= low[2] and low[2] <= low[3] and 
+            //   high[1] <= high[2] and high[2] <= high[3] and high <= high[2]) and close < fasterMA
+
+// sellSignal1 = (low >= low[1] and low[1] >= low[2] and low[2] <= low[3] and low[3] <= low[4]
+//      and (high[1] <= high[3] or high[2] <= high[3]) and high[3] <= high[4] and high <= high[3]) and close < fasterMA
+
+
+
+crossoverUp = (fasterMA + syminfo.mintick  > slowerMA)
+crossoverDown = (fasterMA - syminfo.mintick < slowerMA)
+
+// --------------------
+// Calculate Equity
+// --------------------
+var float startingEquity = strategy.initial_capital
+equity = useCompounding ? strategy.equity : startingEquity
+
+// --------------------
+// Risk Calculation
+// --------------------
+
+// Adjust lot size calculation based on the point value and tick size
+pipValue = syminfo.pointvalue  // Value of one pip or point in the quote currency
+tickSize = syminfo.mintick  // Smallest price increment
+
+if tickSize == 0.1 or tickSize == 0.00001 or tickSize == 0.001
+    factorBuy := factorBuy *10
+    factorSell := factorSell * 10 
+    factorBuyStopLoss := factorBuyStopLoss * 10
+    factorSellStopLoss := factorSellStopLoss * 10
+if tickSize == 0.01
+    factorBuy := factorBuy *100
+    factorSell := factorSell * 100
+    factorBuyStopLoss := factorBuyStopLoss * 100
+    factorSellStopLoss := factorSellStopLoss * 100
+
+candle_range = (high - low)
+risk = equity * (riskPercentage / 100)
+
+// converting qty into a function 
+
+// Function to calculate the adjusted lot size with optional normalization
+calculateLotSize(float risk, float candleRange, float pipValue, float tickSize, bool useCompounding, bool normalizeLotSize, float maxLotSize) =>
+    // Calculate the initial lot size based on risk and candle range
+    qty = risk / (candleRange / (pipValue * tickSize))
+
+    // Adjust the lot size based on tick size (digits)
+    if (tickSize == 0.00001)
+        qty := qty * 100000  // For 5-digit pairs, multiply by 100,000
+    else if (tickSize == 0.1)
+        qty := qty * 10      // For 1-digit pairs, multiply by 10
+    else if (tickSize == 0.001)
+        qty := qty * 100000    // For 3-digit pairs, multiply by 1,000
+    else
+        qty := qty * 100     // For other cases, multiply by 100
+
+    // Normalize the position size if compounding is enabled and normalization is active
+    if (useCompounding and normalizeLotSize)
+        qty := math.min(qty, maxLotSize)  // Cap the position size at the max lot size
+
+    // Return the adjusted and normalized lot size
+    qty
+
+// Call the function and assign the result to the variable 'qty'
+qty = calculateLotSize(risk, candle_range, pipValue, tickSize, useCompounding, normalizeLotSize, maxLotSize)
+
+
+// --------------------
+// Initialize Trade Counters
+// --------------------
+var int longTradesToday = 0
+var int shortTradesToday = 0
+
+// Initialize winner/loser counters
+var int totalWinners = 0
+var int totalLosers = 0
+var int todayWinners = 0
+var int todayLosers = 0
+
+// Initialize previous closed trades count
+var int previousClosedTrades = 0
+
+// --------------------
+// Plotting Variables
+// --------------------
+var float longEntryPrice = na
+var float longSL = na
+var float longTP1 = na
+var float longTP2 = na
+var float shortEntryPrice = na
+var float shortSL = na
+var float shortTP1 = na
+var float shortTP2 = na
+
+// --------------------
+// Apply Candle Color Changes Based on Trend
+// --------------------
+barcolor(changeCandleColor ? (fasterMA > slowerMA ? color1 : color3) : na)
+
+// --------------------
+// Trend Background Shading
+// --------------------
+var color bgColor = na
+if (showTrendShading)
+    bgColor := fasterMA > slowerMA ? color.new(color.green, 90) : color.new(color.red, 90)
+bgcolor(bgColor)
+
+// // --------------------
+// // Cancel the Line Plot if Signal Not Triggered or Trade is Closed 
+// // --------------------
+
+// // Define the number of bars to keep values after the trade is closed
+// barsToKeepValues = 3  // Set this to the desired number of bars
+
+// // Bar counter to track how many bars have passed since the position was closed
+// var int barCounter = 0
+
+// // Reset the bar counter if there is an open position
+// if strategy.position_size != 0
+//     barCounter := 0
+// else
+//     barCounter += 1
+
+// if strategy.position_size == 0 and barCounter > barsToKeepValues 
+//     longTP1 := na
+//     longTP2 := na
+//     longEntryPrice := na
+//     longSL := na
+//     shortTP1 := na
+//     shortTP2 := na
+//     shortEntryPrice := na
+//     shortSL := na
+
+if not timeToTrade and strategy.position_size == 0 
+    longTP1 := na
+    longTP2 := na
+    longEntryPrice := na
+    longSL := na
+    shortTP1 := na
+    shortTP2 := na
+    shortEntryPrice := na
+    shortSL := na 
+    strategy.cancel_all()
+
+
+
+// --------------------
+// Parameters
+// --------------------
+var int longEntryBarIndex = na
+var int shortEntryBarIndex = na
+plotLength = 10  // Number of bars to extend the plot
+
+// --------------------
+// Capture the entry bar index only when the trade variables are set
+// --------------------
+if (not na(longEntryPrice) and na(longEntryBarIndex))
+    longEntryBarIndex := bar_index
+
+if (not na(shortEntryPrice) and na(shortEntryBarIndex))
+    shortEntryBarIndex := bar_index
+
+// --------------------
+// Plot Lines for Long Trades
+// --------------------
+plotLongCondition = not na(longEntryBarIndex) and bar_index - longEntryBarIndex <= plotLength
+longEntryPlot = plot(plotLongCondition ? longEntryPrice : na, "Long Entry", style=plot.style_linebr, color=color.rgb(76, 175, 80, trans))
+longSLPlot = plot(plotLongCondition ? longSL : na, "Long SL", style=plot.style_linebr, color=color.rgb(255, 82, 82, trans))
+longTP1Plot = plot(plotLongCondition ? longTP1 : na, "Long TP1", style=plot.style_linebr, color=color.rgb(33, 150, 243, trans))
+longTP2Plot = plot(plotLongCondition ? longTP2 : na, "Long TP2", style=plot.style_linebr, color=color.rgb(33, 150, 243, trans))
+
+// Apply Transparent Fill Between SL-Entry and TP1-TP2
+fill(longEntryPlot, longSLPlot, color=color.rgb(255, 82, 82, trans))
+fill(longEntryPlot, longTP1Plot, color=color.rgb(76, 175, 80, trans))
+fill(longTP1Plot, longTP2Plot, color=color.rgb(33, 150, 243, trans))
+
+// --------------------
+// Plot Lines for Short Trades
+// --------------------
+plotShortCondition = not na(shortEntryBarIndex) and bar_index - shortEntryBarIndex <= plotLength
+shortEntryPlot = plot(plotShortCondition ? shortEntryPrice : na, "Short Entry", style=plot.style_linebr, color=color.rgb(255, 82, 82, trans))
+shortSLPlot = plot(plotShortCondition ? shortSL : na, "Short SL", style=plot.style_linebr, color=color.rgb(76, 175, 80, trans))
+shortTP1Plot = plot(plotShortCondition ? shortTP1 : na, "Short TP1", style=plot.style_linebr, color=color.rgb(33, 150, 243, trans))
+shortTP2Plot = plot(plotShortCondition ? shortTP2 : na, "Short TP2", style=plot.style_linebr, color=color.rgb(33, 150, 243, trans))
+
+// Apply Transparent Fill Between SL-Entry and TP1-TP2 for Short Trades
+fill(shortEntryPlot, shortSLPlot, color=color.rgb(76, 175, 80, trans))
+fill(shortEntryPlot, shortTP1Plot, color=color.rgb(255, 82, 82, trans))
+fill(shortTP1Plot, shortTP2Plot, color=color.rgb(33, 150, 243, trans))
+
+
+
+
+var bool canTradeToday = true  // Control if the strategy can trade today
+
+buyConditions = canTradeToday and takeBuySignals and barstate.isconfirmed and strategy.opentrades == 0 and timeToTrade and 
+     (not enableMaxTrades or longTradesToday < maxLongTrades) // and crossoverUp and not crossoverDown 
+
+var bool usePipsTP = false
+var float pips = 30
+
+// noMultiTrades = (strategy.opentrades == 0)  ? true : false
+// --------------------
+// Function to Handle Buy Signal Trades
+// --------------------
+if buySignal  and buyConditions //canTradeToday and takeBuySignals and barstate.isconfirmed and strategy.opentrades == 0 and timeToTrade and 
+   //crossoverUp and not crossoverDown and (not enableMaxTrades or longTradesToday < maxLongTrades)
+    longEntryPrice := high + (factorBuy * syminfo.mintick)
+
+    longSL := low[SL_bar_offset] - (factorBuy * syminfo.mintick)
+    log.info(" Buy Signal: Entry Price: {0}, SL {1}", longEntryPrice, longSL)
+    // log.info("LongSL Price has been set at {0}", longSL)
+
+    alert("Buy signal triggered", alert.freq_once_per_bar)
+    
+    // Take Profit Logic based on position scaling
+    if useScaling
+        // longTP1 := longEntryPrice + ((high-low) * tp1Multiple)
+        longTP1 := usePipsTP ? longEntryPrice + (pips * syminfo.mintick ) : longEntryPrice + ((high - low) * tp1Multiple)
+
+        longTP2 := longEntryPrice + ((longEntryPrice - longSL) * tp2Multiple)
+        
+        // Order Entry and Exits for Scaling
+        strategy.order("BuyTrade", strategy.long, stop=longEntryPrice, qty=qty, comment="Buy", alert_message = "Buy Position Taken with Qty : "+ str.tostring(qty))
+        strategy.exit("TP1", "BuyTrade", limit=longTP1, qty_percent=tp1Percent, stop=longSL, comment_loss="SL1", comment_profit="TP1")
+        strategy.exit("TP2", "BuyTrade", limit=longTP2, qty_percent=100, stop=longSL, comment_loss="SL2", comment_profit="TP2")
+    else
+        // Single Take Profit if scaling is disabled
+        // longTP1 := longEntryPrice + ((longEntryPrice - longSL) * tp1Multiple)
+        longTP1 := usePipsTP ? longEntryPrice + (pips * syminfo.mintick ) : longEntryPrice + ((high - low) * tp1Multiple)
+
+        
+        // Order Entry and Exit for Single TP
+        strategy.order("BuyTrade", strategy.long, stop=longEntryPrice, qty=qty, comment="Buy", alert_message = "Buy Position Taken with Qty : "+ str.tostring(qty))
+        strategy.exit("TP", "BuyTrade", limit=longTP1, qty_percent=100, stop=longSL, comment_loss="SL", comment_profit="TP")
+    
+    // Increment long trades counter
+    longTradesToday += 1
+    strategy.cancel("SellTrade")
+
+if not buySignal 
+    strategy.cancel("BuyTrade")
+
+
+if buySignal1  and buyConditions and lookForBetter //canTradeToday and takeBuySignals and barstate.isconfirmed and strategy.opentrades == 0 and timeToTrade and 
+   //crossoverUp and not crossoverDown and (not enableMaxTrades or longTradesToday < maxLongTrades)
+    longEntryPrice := high + (factorBuy * syminfo.mintick)
+    log.info("Long Entry Price set at {0}", longEntryPrice)
+
+    longSL := low[SL_bar_offset] - (factorBuy * syminfo.mintick)
+    log.info("Long SL Price has been set at {0}", longSL)
+
+    alert("Buy signal triggered", alert.freq_once_per_bar)
+    
+    // Take Profit Logic based on position scaling
+    if useScaling
+        longTP1 := longEntryPrice + ((longEntryPrice - longSL) * tp1Multiple)
+        longTP2 := longEntryPrice + ((longEntryPrice - longSL) * tp2Multiple)
+        
+        // Order Entry and Exits for Scaling
+        strategy.order("BuyTrade", strategy.long, stop=longEntryPrice, qty=qty, comment="Buy", alert_message = "Buy Position Taken with Qty : "+ str.tostring(qty))
+        strategy.exit("TP1", "BuyTrade", limit=longTP1, qty_percent=tp1Percent, stop=longSL, comment_loss="SL1", comment_profit="TP1")
+        strategy.exit("TP2", "BuyTrade", limit=longTP2, qty_percent=100, stop=longSL, comment_loss="SL2", comment_profit="TP2")
+    else
+        // Single Take Profit if scaling is disabled
+        longTP1 := longEntryPrice + ((longEntryPrice - longSL) * tp1Multiple)
+        
+        // Order Entry and Exit for Single TP
+        strategy.order("BuyTrade", strategy.long, stop=longEntryPrice, qty=qty, comment="Buy", alert_message = "Buy Position Taken with Qty : "+ str.tostring(qty))
+        strategy.exit("TP", "BuyTrade", limit=longTP1, qty_percent=100, stop=longSL, comment_loss="SL", comment_profit="TP")
+    
+    // Increment long trades counter
+    longTradesToday += 1
+    // strategy.cancel("SellTrade")
+
+
+sellConditions = canTradeToday and takeSellSignals and barstate.isconfirmed and strategy.opentrades == 0 and timeToTrade 
+     and (not enableMaxTrades or shortTradesToday < maxShortTrades) // and   crossoverDown and not crossoverUp
+
+if buySignal or buySignal1
+    alert("Buy signal", alert.freq_once_per_bar)
+
+if sellSignal or sellSignal1
+    alert("Sell signal", alert.freq_once_per_bar)
+
+// --------------------
+// Function to Handle Sell Signal Trades
+// --------------------
+if sellSignal and sellConditions
+    shortEntryPrice := low - (factorSell * syminfo.mintick)
+    log.info("Short Entry Price has been set at {0}", shortEntryPrice)
+    shortSL := high[SL_bar_offset] + (factorSell * syminfo.mintick)
+    log.info("ShortSL set at {0}", shortSL)
+
+    alert("Sell signal triggered", alert.freq_once_per_bar)
+    
+    // Take Profit Logic based on position scaling
+    if useScaling
+        shortTP1 := shortEntryPrice - ((shortSL - shortEntryPrice) * tp1Multiple)
+        shortTP2 := shortEntryPrice - ((shortSL - shortEntryPrice) * tp2Multiple)
+        
+        // Order Entry and Exits for Scaling
+        strategy.order("SellTrade", strategy.short, stop=shortEntryPrice, qty=qty, comment="Sell", alert_message = "Sell Position Taken with Qty : "+ str.tostring(qty))
+        strategy.exit("TP1", "SellTrade", limit=shortTP1, qty_percent=tp1Percent, stop=shortSL, comment_loss="SL1", comment_profit="TP1")
+        strategy.exit("TP2", "SellTrade", limit=shortTP2, qty_percent=100, stop=shortSL, comment_loss="SL2", comment_profit="TP2")
+    else
+        // Single Take Profit if scaling is disabled
+        shortTP1 := shortEntryPrice - ((shortSL - shortEntryPrice) * tp1Multiple)
+        
+        // Order Entry and Exit for Single TP
+        strategy.order("SellTrade", strategy.short, stop=shortEntryPrice, qty=qty, comment="Sell", alert_message = "Sell Position Taken with Qty : "+ str.tostring(qty))
+        strategy.exit("TP", "SellTrade", limit=shortTP1, qty_percent=100, stop=shortSL, comment_loss="SL", comment_profit="TP")
+    
+    // Increment short trades counter
+    shortTradesToday += 1
+    strategy.cancel("BuyTrade")
+
+
+
+if sellSignal1 and sellConditions and lookForBetter
+    shortEntryPrice := low - (factorSell * syminfo.mintick)
+    shortSL := high[SL_bar_offset] + (factorSell * syminfo.mintick)
+    log.info("ShortSL set at {0}", shortSL)
+
+    alert("Sell signal triggered", alert.freq_once_per_bar)
+    
+    // Take Profit Logic based on position scaling
+    if useScaling
+        shortTP1 := shortEntryPrice - ((shortSL - shortEntryPrice) * tp1Multiple)
+        shortTP2 := shortEntryPrice - ((shortSL - shortEntryPrice) * tp2Multiple)
+        
+        // Order Entry and Exits for Scaling
+        strategy.order("SellTrade", strategy.short, stop=shortEntryPrice, qty=qty, comment="Sell", alert_message = "Sell Position Taken with Qty : "+ str.tostring(qty))
+        log.info("Short Trade avtivated at {0}", shortEntryPrice)
+
+        strategy.exit("TP1", "SellTrade", limit=shortTP1, qty_percent=tp1Percent, stop=shortSL, comment_loss="SL1", comment_profit="TP1")
+        strategy.exit("TP2", "SellTrade", limit=shortTP2, qty_percent=100, stop=shortSL, comment_loss="SL2", comment_profit="TP2")
+    else
+        // Single Take Profit if scaling is disabled
+        shortTP1 := shortEntryPrice - ((shortSL - shortEntryPrice) * tp1Multiple)
+        
+        // Order Entry and Exit for Single TP
+        strategy.order("SellTrade", strategy.short, stop=shortEntryPrice, qty=qty, comment="Sell", alert_message = "Sell Position Taken with Qty : "+ str.tostring(qty))
+        strategy.exit("TP", "SellTrade", limit=shortTP1, qty_percent=100, stop=shortSL, comment_loss="SL", comment_profit="TP")
+    
+    // Increment short trades counter
+    shortTradesToday += 1
+
+
+// --------------------
+// Reset Trades if New Day
+// --------------------
+newDay = dayofmonth(time) != dayofmonth(time[1])
+if newDay
+    longTradesToday := 0
+    shortTradesToday := 0
+    todayWinners := 0
+    todayLosers := 0
+
+// --------------------
+// Initialize Variables
+// --------------------
+var float todaysProfitLoss = 0.0  // Track today's profit or loss
+
+// Reset today's profit/loss and trading flag at the start of a new day
+if (dayofmonth(time) != dayofmonth(time[1]))
+    todaysProfitLoss := 0.0
+    canTradeToday := true
+
+// Update today's profit/loss and winners/losers whenever a trade is closed
+if (strategy.closedtrades > previousClosedTrades)
+    for i = previousClosedTrades to strategy.closedtrades - 1
+        tradeProfit = strategy.closedtrades.profit(i)
+        
+        // Add profit to today's total if trade closed today
+        if dayofmonth(strategy.closedtrades.exit_time(i)) == dayofmonth(time)
+            todaysProfitLoss += tradeProfit
+            
+            // Update today's winners and losers
+            if tradeProfit > 0
+                todayWinners += 1
+                totalWinners += 1
+            else if tradeProfit < 0
+                todayLosers += 1
+                totalLosers += 1
+    
+    // Update the previous closed trades count
+    previousClosedTrades := strategy.closedtrades
+
+// Check if today's loss exceeds the limit and stop trading if it does
+if todaysProfitLoss < 0 and math.abs(todaysProfitLoss / strategy.equity) * 100 > maxDailyLossPercent
+    canTradeToday := false
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////// Drawing Functions Start Here ////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+// --------------------
+// Fancy Graphics: Add Buy/Sell Labels on Chart (Show Only Once)
+// --------------------
+
+// Variables to track the state of the last label
+var bool buyLabelShown = false
+var bool sellLabelShown = false
+
+if (showTrendFlags and barstate.isconfirmed)
+    if (pineDirection > 1 and not buyLabelShown)
+        label.new(bar_index, low, 
+                  style=label.style_flag, 
+                  text="Bull", 
+                  color=color.new(color.blue, 0), 
+                  textcolor=color.white, 
+                  size=size.small, 
+                  tooltip="Bullish Trend", 
+                  yloc=yloc.abovebar)
+        buyLabelShown := true
+        sellLabelShown := false  // Reset the sell flag when a buy signal occurs
+
+    else if (pineDirection < 0 and not sellLabelShown)
+        label.new(bar_index, high, 
+                  style=label.style_flag, 
+                  text="Bear", 
+                  color=color.new(color.red, 0), 
+                  textcolor=color.white, 
+                  size=size.small, 
+                  tooltip="Bearish Trend", 
+                  yloc=yloc.belowbar)
+        sellLabelShown := true
+        buyLabelShown := false  // Reset the buy flag when a sell signal occurs
+
+
+// // --------------------
+// // Fancy Graphics: Add Buy/Sell Labels on Chart (Show Only Once)
+// // --------------------
+
+// // Variables to track the state of the last label
+// var bool buyLabelShown = false
+// var bool sellLabelShown = false
+
+// if (showTrendFlags)
+//     if (pineDirection > 1 and barstate.isconfirmed and not buyLabelShown)
+//         label.new(bar_index, low, 
+//                   style=label.style_flag, 
+//                   text="Buy", 
+//                   color=color.new(color.blue, 0), 
+//                   textcolor=color.white, 
+//                   size=size.small, 
+//                   tooltip="Buy Signal", 
+//                   yloc=yloc.abovebar)
+//         buyLabelShown := true
+//         sellLabelShown := false  // Reset the sell flag when a buy signal occurs
+
+//     if (pineDirection < 0 and barstate.isconfirmed and not sellLabelShown)
+//         label.new(bar_index, high, 
+//                   style=label.style_flag, 
+//                   text="Sell", 
+//                   color=color.new(color.red, 0), 
+//                   textcolor=color.white, 
+//                   size=size.small, 
+//                   tooltip="Sell Signal", 
+//                   yloc=yloc.belowbar)
+//         sellLabelShown := true
+//         buyLabelShown := false  // Reset the buy flag when a sell signal occurs
+
+
+
+
+// --------------------
+// Buy Arrow: Plots an arrow in the shape of a triangle below the bar for Buy signals
+// --------------------
+plotshape(buySignal or buySignal1 and buyConditions and barstate.isconfirmed, 
+          style=shape.triangleup, 
+          location=location.belowbar, 
+          color=buySignal ? color.green : buySignal1 ? color.blue : color.gray, 
+        //   color=color.green, 
+
+          size=size.tiny, 
+          offset=0, 
+          title="Buy Signal")
+
+
+// --------------------
+// Sell Arrow: Plots an arrow in the shape of a triangle above the bar for Sell signals
+// --------------------
+plotshape(sellSignal or sellSignal1 and sellConditions and barstate.isconfirmed, 
+          style=shape.triangledown, 
+          location=location.abovebar, 
+          color= sellSignal ? color.red : sellSignal1? color.orange : color.gray, 
+          size=size.tiny, 
+          offset=0, 
+          title="Sell Signal")
+
+
+
+// ==================== Added: Informational Window (Info Box) ====================
+
+// Determine Info Box position based on user input
+// infoBoxPos = position.top_right  // default
+// if (infoBoxPosition == "Top Left")
+//     infoBoxPos := position.top_left
+// else if (infoBoxPosition == "Top Right")
+//     infoBoxPos := position.top_right
+// else if (infoBoxPosition == "Bottom Left")
+//     infoBoxPos := position.bottom_left
+// else if (infoBoxPosition == "Bottom Right")
+//     infoBoxPos := position.bottom_right
+
+/// Determine the info box position based on user input using switch
+var string infoBoxPos = na
+
+switch infoBoxPosition
+    "Top Left" => infoBoxPos := position.top_left
+    "Top Right" => infoBoxPos := position.top_right
+    "Bottom Left" => infoBoxPos := position.bottom_left
+    "Bottom Right" => infoBoxPos := position.bottom_right
+    => infoBoxPos := position.top_right  // Default if none of the cases match
+
+
+
+// Initialize the table once with selected position
+var table infoTable = table.new(position = infoBoxPos, columns = 1, rows = 12, border_width = 1, force_overlay = true, 
+     border_color = color.new(color.black, infoBoxBgTransparency), frame_color = color.new(color.black, infoBoxBgTransparency), 
+     frame_width = 1, bgcolor = color.new(color.rgb(113, 111, 111), infoBoxBgTransparency))
+
+// Calculate Info Box Background Color based on user input
+infoBoxBgColor = darkLightTheme ?
+     (infoBoxTheme == "Dark" ? color.rgb(2, 7, 22) : 
+     (infoBoxTheme == "Light" ? color.rgb(249, 250, 251) : manualInfoBoxBg )) :manualInfoBoxBg
+
+// **Define Text Colors Based on Theme**
+neutralColorTheme = darkLightTheme ? 
+     (infoBoxTheme == "Dark" ? color.rgb(255, 255, 255) : 
+     (infoBoxTheme == "Light" ? color.rgb(2, 2, 2) : textColorNeutralUser)) : textColorNeutralUser
+
+// Calculate Trades Taken Today
+totalTradesToday = longTradesToday + shortTradesToday
+
+// Calculate Profit/Loss So Far
+profitLoss = strategy.netprofit
+profitLossText = "Profit/Loss: " + str.tostring(strategy.account_currency) +" " + str.tostring(profitLoss, "#.##")
+
+// Calculate Risk % per Trade
+riskPerTrade = riskPercentage
+
+// Format today's profit/loss text
+todaysProfitLossText = "Today's Profit/Loss: " + str.tostring(todaysProfitLoss, "#.##")
+
+// Determine Trading Session Status Text and Color
+tradingSessionStatus = timeToTrade ? "On" : "Off"
+tradingSessionColor = timeToTrade ? color.green : color.red
+
+// **Define Text Colors Based on Theme and User Input**
+neutralColor = darkLightTheme ? 
+     (infoBoxTheme == "Dark" ? color.rgb(255, 255, 255) : 
+     (infoBoxTheme == "Light" ? color.rgb(2, 2, 2) : textColorNeutralUser)) : textColorNeutralUser
+
+
+negativeColor = darkLightTheme ? color.rgb(255, 82, 82) : textColorNegativeUser
+positiveColor = darkLightTheme ? color.rgb(76, 175, 80) : textColorPositiveUser
+alignTableText = text.align_left
+
+
+
+// Update the table content on each confirmed bar based on user input
+if barstate.isconfirmed
+    if showInfoBox
+        // Clear previous table content
+        table.clear(infoTable, start_column=0, start_row=0)
+        // table.cell_set_text_halign(infoTable,)
+        
+        // Add Trading Session Status
+        if showTradingSession
+            table.cell(infoTable, 0, 0,
+                 text="Trading Session: " + tradingSessionStatus, 
+                 text_color=tradingSessionColor, 
+                 text_size=size.small,
+                 text_halign = alignTableText,
+                 bgcolor=infoBoxBgColor)
+        
+        
+        // Add Profit/Loss So Far
+        if showProfitLoss
+            table.cell(infoTable, 0, 1, 
+                 text=profitLossText, 
+                 text_color=profitLoss >= 0 ? positiveColor : negativeColor, 
+                 text_size=size.small, 
+                 bgcolor=infoBoxBgColor)
+        
+        // Add Total Winners
+        if showTotalWinners
+            table.cell(infoTable, 0, 2, 
+                 text="Total Winners: " + str.tostring(totalWinners), 
+                 text_color=positiveColor, 
+                 text_size=size.small, 
+                 text_halign = alignTableText,
+                 bgcolor=infoBoxBgColor)
+        
+        // Add Total Losers
+        if showTotalLosers
+            table.cell(infoTable, 0, 3, 
+                 text="Total Losers: " + str.tostring(totalLosers), 
+                 text_color=negativeColor, 
+                 text_halign = alignTableText,
+                 text_size=size.small, 
+                 bgcolor=infoBoxBgColor)
+        
+        // Add Trades Taken So Far
+        if showTradesTaken
+            table.cell(infoTable, 0, 4, 
+                 text="Trades Taken: " + str.tostring(totalTradesToday), 
+                 text_color=neutralColor, 
+                 text_halign = alignTableText,
+                 text_size=size.small, 
+                 bgcolor=infoBoxBgColor)
+        // Add Today's Winners
+        if showTodayWinners
+            table.cell(infoTable, 0, 5, 
+                 text="Today's Winners: " + str.tostring(todayWinners), 
+                 text_color=positiveColor, 
+                 text_size=size.small, 
+                 text_halign = alignTableText,
+                 bgcolor=infoBoxBgColor)
+        
+        // Add Today's Losers
+        if showTodayLosers
+            table.cell(infoTable, 0, 6, 
+                 text="Today's Losers: " + str.tostring(todayLosers), 
+                 text_color=negativeColor, 
+                 text_size=size.small, 
+                 text_halign = alignTableText,
+                 bgcolor=infoBoxBgColor)
+        
+        // Add Today's Profit/Loss
+        if showTodaysProfitLoss
+            table.cell(infoTable, 0, 7, 
+                 text=todaysProfitLossText, 
+                 text_color=todaysProfitLoss >= 0 ? positiveColor : negativeColor, 
+                 text_size=size.small, 
+                 text_halign = alignTableText,
+                 bgcolor=infoBoxBgColor)
+        
+        // Add Risk % per Trade
+        if showRiskPercentage
+            table.cell(infoTable, 0, 8, 
+                 text="Risk : " + str.tostring(riskPerTrade, "#.##") + "%", 
+                 text_color=neutralColor, 
+                 text_size=size.small, 
+                 text_halign = alignTableText,
+                 bgcolor=infoBoxBgColor)
+
+        // Show tickSize
+        table.cell(infoTable, 0, 9,
+                 text="TickSize: " + str.tostring(tickSize) , 
+                 text_color=neutralColor, 
+                 text_size=size.small, 
+                 text_halign = alignTableText,
+                 bgcolor=infoBoxBgColor)
+                
+        // Show Name of Strategy
+        table.cell(infoTable, 0, 10, 
+                 text="MonsterScalper 3 \n V.250 Beta 2", 
+                 text_color=color1, 
+                 text_size=size.normal, 
+                 text_halign = text.align_center,
+                 bgcolor=infoBoxBgColor)
+    else
+        // Clear the table to hide it
+        table.clear(infoTable, start_column=0, start_row=0)
+
+// ==================== End: Informational Window (Info Box) ====================
+
+
+// Label of Version 
+// // Define the version as a variable
+// version = "V117 Beta"
+
+// // Display the version on the chart using a label
+// var label versionLabel = label.new(bar_index, na, "Version: " + version, yloc=yloc.price, color=color.blue, style=label.style_label_down)
+
+// // Update the label's position to stay visible on the chart
+// label.set_x(versionLabel, bar_index)
+// label.set_y(versionLabel, high + syminfo.mintick)

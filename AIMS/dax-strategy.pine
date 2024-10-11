@@ -6,6 +6,8 @@ useCompounding = input.bool(false, "Enable Compounding", group="Risk Management"
 maxLotSize = input.float(1000.0, "Max Lot Size", group="Risk Management", tooltip="Defines the maximum position size allowed to prevent excessive risk when compounding is enabled.")
 normalizeLotSize = input.bool(true, "Normalize Max Lot Size for Compounding", group="Risk Management", tooltip="If enabled, the position size will be capped at the defined maximum lot size when compounding is enabled to prevent excessive growth in position size.")
 
+
+
 // Scaling Options Inputs
 useScaling = input.bool(true, "Enable Position Scaling", group="Scaling Options", tooltip="Enable to use two take profit levels, disable for a single take profit level.")
 
@@ -204,7 +206,7 @@ if (dayofmonth(time) != dayofmonth(time[1]))
     sellAlertMessage = licenseID + ",sell,EURUSD,risk=1,secret=" + userInput
     
     // Trigger buy alert
-    if (condition_for_buy)
+    if (alertBuy)
         alert(buyAlertMessage, alert.freq_once_per_bar_close)
     
     // Trigger sell alert
